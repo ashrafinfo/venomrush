@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>SNAKE // BIO-DIGITAL</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;900&family=JetBrains+Mono:wght@500&display=swap');
+
+        :root {
+            --bg: #020406;
+            --accent: #39ff14;
+            --danger: #ff003c;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; touch-action: none; overflow: hidden; }
+
+        body {
+            background-color: var(--bg);
+            background-image: radial-gradient(circle at 50% 50%, #0a111a 0%, #020406 100%);
+            color: #fff;
+            font-family: 'Orbitron', sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        #game-container {
+            position: relative;
+            padding: 5px;
+            background: rgba(57, 255, 20, 0.1);
+            border: 1px solid rgba(57, 255, 20, 0.3);
+            border-radius: 12px;
+            box-shadow: 0 0 40px rgba(0, 0, 0, 1);
+        }
+
+        canvas { display: block; border-radius: 8px; background: #000; }
+
+        #hud {
+            position: absolute;
+            top: -45px;
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            color: var(--accent);
+            text-transform: uppercase;
+        }
+
+        .overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.9);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            backdrop-filter: blur(8px);
+            border-radius: 8px;
+        }
+
+        h1 {
+            font-size: 2.5rem;
+            background: linear-gradient(to bottom, #fff, var(--accent));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 2rem;
+            filter: drop-shadow(0 0 10px var(--accent));
+        }
+
+        .btn {
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            padding: 12px 25px;
+            margin: 8px;
+            width: 220px;
+            font-family: 'Orbitron', sans-serif;
+            cursor: pointer;
+            transition: 0.2s;
+            clip-path: polygon(5% 0, 100% 0, 95% 100%, 0% 100%);
+        }
+
+        .btn:hover { background: var(--accent); color: #000; box-shadow: 0 0 20px var(--accent); }
+        .hidden { display: none !important; }
+
+        /* Bonus fruit countdown ring — shown in HUD */
+        #bonus-hud {
+            position: absolute;
+            top: -45px;
+            right: 0;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.7rem;
+            color: #ffd700;
+            text-transform: uppercase;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="game-container">
+        <div id="hud">
+            <div>MODE: <span id="ui-mode">-</span></div>
+            <div>SCORE: <span id="ui-score">0</span></div>
+            <div>RECORD: <span id="ui-high">0</span></div>
+        </div>
+
+        <canvas id="gameCanvas"></canvas>
+
+        <div id="menu-overlay" class="overlay">
+            <h1>SNAKE_BIO</h1>
+            <button class="btn" onclick="startGame('classic')">CLASSIC_SIM</button>
+            <button class="btn" onclick="startGame('wrap')">WRAP_VOID</button>
+            <button class="btn" onclick="startGame('hurdle')">HURDLE_FIELD</button>
+        </div>
+
+        <div id="death-overlay" class="overlay hidden">
+            <h2 style="color: var(--danger); margin-bottom: 10px;">BIO_SIG_LOST</h2>
+            <div style="font-size: 2rem; margin-bottom: 20px;" id="final-score">0</div>
+            <button class="btn" onclick="showMenu()">MENU</button>
+            <button class="btn" style="border-color: #fff; color: #fff" onclick="restart()">RETRY</button>
+        </div>
+    </div>
+
+<script>
+// ═══════════════════════════════════════════
+//  SNAKE BIO-DIGITAL v3.0
+//  Changes: adaptive FPS cap (120), bonus fruit
+//  system, realistic head rendering
+// ═══════════════════════════════════════════
+
+const CONFIG = {
+    GRID: 22,
+    BASE_SPEED: 190,
+    MIN_SPEED: 65,
+    SWIPE_MIN: 30,
+    MAX_FPS: 120,           // hard FPS ceiling
+    FRUITS: ['🍎', '🍒', '🍇', '🍓', '🍑'],
+    BUGS:   ['🐞', '🪲', '🪳', '🐜'],
+    BONUS_FRUITS: ['🍉', '🍍', '🥭', '🍈', '🍋'],  // big bonus fruit pool
+    BONUS_EVERY: 5,         // spawn bonus after every N normal foods eaten
+    BONUS_DURATION: 5000,   // ms bonus fruit stays on screen
+    BONUS_SCORE: 50         // score for eating bonus fruit
+};
+
+const MIN_FRAME_MS = 1000 / CONFIG.MAX_FPS;  // ~8.33ms at 120fps
+
+const canvas = document.getElementById('gameCanvas');
+const ctx    = canvas.getContext('2d');
+
+// ── State ──────────────────────────────────
+let state = {
+    status: 'MENU',
+    mode: 'classic',
+    score: 0,
+    cellSize: 0,
+    lastTime: 0,
+    lastFrameTime: 0,    // for FPS cap
+    accumulator: 0,
+    shake: 0,
+    foodEatenCount: 0    // tracks normal food eaten for bonus trigger
+};
+
+let snake = {
+    body: [],
+    dir:     { x: 1, y: 0 },
+    nextDir: { x: 1, y: 0 },
+    wiggle: 0,
+    didWrap: false
+};
+
+// Normal food
+let food = { x: 5, y: 5, type: '🍎', isBug: false };
+
+// Bonus fruit — null when not active
+let bonusFruit = null;
+let bonusTimer = null;   // setTimeout handle
+
+let obstacles = [];
+
+// ── Touch / Swipe ──────────────────────────
+let touchStart = null;
+window.addEventListener('touchstart', e => {
+    touchStart = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+}, { passive: false });
+
+window.addEventListener('touchend', e => {
+    if (!touchStart) return;
+    const dx = e.changedTouches[0].clientX - touchStart.x;
+    const dy = e.changedTouches[0].clientY - touchStart.y;
+    if (Math.abs(dx) > CONFIG.SWIPE_MIN || Math.abs(dy) > CONFIG.SWIPE_MIN) {
+        let req = Math.abs(dx) > Math.abs(dy)
+            ? (dx > 0 ? {x:1,y:0} : {x:-1,y:0})
+            : (dy > 0 ? {x:0,y:1} : {x:0,y:-1});
+        if (req.x !== -snake.dir.x || req.y !== -snake.dir.y) snake.nextDir = req;
+    }
+    touchStart = null;
+});
+
+// ── Init ───────────────────────────────────
+function init() {
+    const size = Math.min(window.innerWidth - 40, 450);
+    canvas.width = size;
+    canvas.height = size;
+    state.cellSize = size / CONFIG.GRID;
+    updateUI();
+    requestAnimationFrame(loop);
+}
+
+// ── Game start / restart ───────────────────
+function startGame(mode) {
+    state.mode = mode;
+    state.status = 'RUNNING';
+    state.score = 0;
+    state.accumulator = 0;
+    state.foodEatenCount = 0;
+    state.lastFrameTime = 0;
+
+    snake.body    = [{x:10,y:10},{x:9,y:10},{x:8,y:10}];
+    snake.dir     = {x:1,y:0};
+    snake.nextDir = {x:1,y:0};
+    snake.didWrap = false;
+
+    obstacles = [];
+    clearBonusFruit();
+
+    if (mode === 'hurdle') {
+        const safe = new Set(['10,9','10,10','10,11','9,10','11,10']);
+        let placed = 0;
+        while (placed < 25) {
+            const ox = Math.floor(Math.random() * CONFIG.GRID);
+            const oy = Math.floor(Math.random() * CONFIG.GRID);
+            if (!safe.has(`${ox},${oy}`)) { obstacles.push({x:ox,y:oy}); placed++; }
+        }
+    }
+
+    spawnFood();
+    document.getElementById('menu-overlay').classList.add('hidden');
+    document.getElementById('death-overlay').classList.add('hidden');
+    updateUI();
+}
+
+// ── Food helpers ───────────────────────────
+function getEmptyCells(excludeBonus) {
+    const occupied = new Set([
+        ...snake.body.map(c => `${c.x},${c.y}`),
+        ...obstacles.map(c => `${c.x},${c.y}`),
+        `${food.x},${food.y}`
+    ]);
+    if (excludeBonus && bonusFruit) occupied.add(`${bonusFruit.x},${bonusFruit.y}`);
+    const av = [];
+    for (let x = 0; x < CONFIG.GRID; x++)
+        for (let y = 0; y < CONFIG.GRID; y++)
+            if (!occupied.has(`${x},${y}`)) av.push({x,y});
+    return av;
+}
+
+function spawnFood() {
+    const av = getEmptyCells(true);
+    if (!av.length) return;
+    const cell = av[Math.floor(Math.random() * av.length)];
+    food.x    = cell.x;
+    food.y    = cell.y;
+    food.isBug = Math.random() > 0.8;
+    const list = food.isBug ? CONFIG.BUGS : CONFIG.FRUITS;
+    food.type = list[Math.floor(Math.random() * list.length)];
+}
+
+function spawnBonusFruit() {
+    const av = getEmptyCells(false);
+    if (!av.length) return;
+    const cell = av[Math.floor(Math.random() * av.length)];
+    bonusFruit = {
+        x: cell.x,
+        y: cell.y,
+        type: CONFIG.BONUS_FRUITS[Math.floor(Math.random() * CONFIG.BONUS_FRUITS.length)],
+        spawnTime: performance.now()
+    };
+    // Auto-despawn after BONUS_DURATION ms
+    bonusTimer = setTimeout(clearBonusFruit, CONFIG.BONUS_DURATION);
+}
+
+function clearBonusFruit() {
+    bonusFruit = null;
+    if (bonusTimer) { clearTimeout(bonusTimer); bonusTimer = null; }
+}
+
+// ── Game logic tick ────────────────────────
+function update() {
+    snake.dir     = snake.nextDir;
+    snake.didWrap = false;
+
+    const head = {
+        x: snake.body[0].x + snake.dir.x,
+        y: snake.body[0].y + snake.dir.y
+    };
+
+    if (state.mode === 'wrap') {
+        if (head.x < 0)            { head.x = CONFIG.GRID - 1; snake.didWrap = true; }
+        if (head.x >= CONFIG.GRID) { head.x = 0;               snake.didWrap = true; }
+        if (head.y < 0)            { head.y = CONFIG.GRID - 1; snake.didWrap = true; }
+        if (head.y >= CONFIG.GRID) { head.y = 0;               snake.didWrap = true; }
+    } else if (head.x < 0 || head.x >= CONFIG.GRID ||
+               head.y < 0 || head.y >= CONFIG.GRID) return die();
+
+    if (snake.body.some(s => s.x === head.x && s.y === head.y)) return die();
+    if (obstacles.some(o => o.x === head.x && o.y === head.y))  return die();
+
+    snake.body.unshift(head);
+
+    let ate = false;
+
+    // Normal food check
+    if (head.x === food.x && head.y === food.y) {
+        state.score += food.isBug ? 30 : 10;
+        state.shake  = 8;
+        state.foodEatenCount++;
+        spawnFood();
+        // Every BONUS_EVERY normal foods → spawn bonus (only if none active)
+        if (state.foodEatenCount % CONFIG.BONUS_EVERY === 0 && !bonusFruit) {
+            spawnBonusFruit();
+        }
+        updateUI();
+        ate = true;
+    }
+
+    // Bonus fruit check
+    if (bonusFruit && head.x === bonusFruit.x && head.y === bonusFruit.y) {
+        state.score += CONFIG.BONUS_SCORE;
+        state.shake  = 14;
+        clearBonusFruit();
+        updateUI();
+        ate = true;
+    }
+
+    if (!ate) snake.body.pop();
+}
+
+function die() {
+    state.status = 'DEAD';
+    state.shake  = 20;
+    clearBonusFruit();
+    setTimeout(() => {
+        state.status = 'GAMEOVER';
+        document.getElementById('death-overlay').classList.remove('hidden');
+        document.getElementById('final-score').innerText = state.score;
+    }, 800);
+}
+
+// ── Main loop with FPS cap ─────────────────
+function loop(timestamp) {
+    requestAnimationFrame(loop);
+
+    // FPS cap: skip frame if too soon
+    const frameDelta = timestamp - state.lastFrameTime;
+    if (frameDelta < MIN_FRAME_MS) return;
+    state.lastFrameTime = timestamp;
+
+    const dt = Math.min(timestamp - state.lastTime, 100); // clamp huge dt (tab switch etc)
+    state.lastTime = timestamp;
+
+    if (state.status === 'RUNNING') {
+        state.accumulator += dt;
+        const speed = Math.max(CONFIG.MIN_SPEED, CONFIG.BASE_SPEED - (state.score / 3));
+        while (state.accumulator >= speed) {
+            update();
+            state.accumulator -= speed;
+        }
+    }
+
+    const speed    = Math.max(CONFIG.MIN_SPEED, CONFIG.BASE_SPEED - (state.score / 3));
+    const progress = Math.min(state.accumulator / speed, 1);
+    draw(progress, timestamp);
+}
+
+// ── Renderer ───────────────────────────────
+function draw(progress, timestamp) {
+    ctx.save();
+
+    if (state.shake > 0) {
+        ctx.translate(
+            (Math.random() - 0.5) * state.shake,
+            (Math.random() - 0.5) * state.shake
+        );
+        state.shake *= 0.82;
+        if (state.shake < 0.5) state.shake = 0;
+    }
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const cs = state.cellSize;
+
+    // Grid
+    ctx.strokeStyle = 'rgba(57,255,20,0.05)';
+    for (let i = 0; i < CONFIG.GRID; i++) {
+        ctx.strokeRect(i * cs, 0, 1, canvas.height);
+        ctx.strokeRect(0, i * cs, canvas.width, 1);
+    }
+
+    // Obstacles
+    ctx.fillStyle = '#1e293b';
+    obstacles.forEach(o => {
+        ctx.beginPath();
+        ctx.moveTo(o.x*cs + cs/2, o.y*cs + 2);
+        ctx.lineTo(o.x*cs + cs-2, o.y*cs + cs-2);
+        ctx.lineTo(o.x*cs + 2,    o.y*cs + cs-2);
+        ctx.fill();
+    });
+
+    // Normal food
+    ctx.save();
+    ctx.font = `${cs * 0.78}px serif`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    if (food.isBug) {
+        ctx.translate(food.x*cs + cs/2 + Math.sin(timestamp/50)*2, food.y*cs + cs/2);
+    } else {
+        ctx.translate(food.x*cs + cs/2, food.y*cs + cs/2 + Math.sin(timestamp/200)*2.5);
+    }
+    ctx.fillText(food.type, 0, 0);
+    ctx.restore();
+
+    // Bonus fruit — bigger, pulsing gold glow, countdown ring
+    if (bonusFruit) {
+        const elapsed  = timestamp - bonusFruit.spawnTime;
+        const fraction = elapsed / CONFIG.BONUS_DURATION;         // 0→1
+        const pulse    = 1 + Math.sin(timestamp / 120) * 0.12;   // scale pulse
+        const bx       = bonusFruit.x * cs + cs/2;
+        const by       = bonusFruit.y * cs + cs/2;
+
+        // Countdown arc behind fruit (shrinks as time runs out)
+        const angle = (1 - fraction) * Math.PI * 2;
+        ctx.save();
+        ctx.strokeStyle = fraction > 0.6 ? '#ffd700' : '#ff6b35';
+        ctx.lineWidth   = 2.5;
+        ctx.shadowBlur  = 8;
+        ctx.shadowColor = '#ffd700';
+        ctx.beginPath();
+        ctx.arc(bx, by, cs * 0.72, -Math.PI/2, -Math.PI/2 + angle);
+        ctx.stroke();
+        ctx.restore();
+
+        // Fruit emoji — 1.5× size of normal food
+        ctx.save();
+        ctx.font = `${cs * 1.2 * pulse}px serif`;
+        ctx.textAlign    = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.shadowBlur   = 18;
+        ctx.shadowColor  = '#ffd700';
+        ctx.translate(bx, by + Math.sin(timestamp / 160) * 3);
+        ctx.fillText(bonusFruit.type, 0, 0);
+        ctx.restore();
+    }
+
+    // ── Snake rendering ────────────────────
+    if (snake.body.length > 0) {
+        snake.wiggle += 0.18;
+
+        // Smooth head position
+        let headX = snake.body[0].x * cs + cs/2;
+        let headY = snake.body[0].y * cs + cs/2;
+        if (state.status === 'RUNNING' && !snake.didWrap) {
+            headX += snake.dir.x * cs * (progress - 1);
+            headY += snake.dir.y * cs * (progress - 1);
+        }
+
+        ctx.lineCap  = 'round';
+        ctx.lineJoin = 'round';
+
+        // Checks if two body segments are on opposite sides (wrap jump)
+        function isWrapJump(a, b) {
+            return Math.abs(a.x - b.x) > 1 || Math.abs(a.y - b.y) > 1;
+        }
+
+        // Draws body as connected curves, breaking path at any wrap jump
+        function drawBodyPath() {
+            ctx.beginPath();
+            ctx.moveTo(headX, headY);
+            for (let i = 1; i < snake.body.length; i++) {
+                const seg  = snake.body[i];
+                const prev = snake.body[i - 1];
+                if (isWrapJump(seg, prev)) {
+                    ctx.stroke();
+                    ctx.beginPath();
+                    ctx.moveTo(seg.x * cs + cs/2, seg.y * cs + cs/2);
+                    continue;
+                }
+                const xc = (seg.x*cs + cs/2 + prev.x*cs + cs/2) / 2;
+                const yc = (seg.y*cs + cs/2 + prev.y*cs + cs/2) / 2;
+                // Gentle slither — clamp so long snakes don't thrash wildly
+                const slither = Math.sin(snake.wiggle + i * 0.45) * Math.min(i * 0.4, 3.5);
+                const offX = snake.dir.y * slither;
+                const offY = snake.dir.x * slither;
+                ctx.quadraticCurveTo(prev.x*cs + cs/2, prev.y*cs + cs/2, xc + offX, yc + offY);
+            }
+            ctx.stroke();
+        }
+
+        // 1. Outer glow pass
+        ctx.shadowBlur  = 14;
+        ctx.shadowColor = '#39ff14';
+        ctx.strokeStyle = '#39ff14';
+        ctx.lineWidth   = cs * 0.78;
+        drawBodyPath();
+
+        // 2. Dark centre spine (gives depth / 3D feel)
+        ctx.shadowBlur  = 0;
+        ctx.strokeStyle = 'rgba(0,20,0,0.55)';
+        ctx.lineWidth   = cs * 0.32;
+        drawBodyPath();
+
+        // 3. Scale pattern — subtle lighter stripe on top half of body
+        ctx.strokeStyle = 'rgba(100,255,80,0.18)';
+        ctx.lineWidth   = cs * 0.18;
+        drawBodyPath();
+
+        // ── Detailed Head ──────────────────
+        const headR  = cs * 0.62;   // head circle radius (bigger than body width)
+        const angle  = Math.atan2(snake.dir.y, snake.dir.x); // direction angle in radians
+
+        ctx.save();
+        ctx.translate(headX, headY);
+        ctx.rotate(angle);
+
+        // Head base — slightly elongated oval
+        ctx.shadowBlur  = 18;
+        ctx.shadowColor = '#39ff14';
+        ctx.fillStyle   = '#2dcc10';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, headR * 1.18, headR * 0.92, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Head top highlight (gives dome/3D look)
+        const grad = ctx.createRadialGradient(-headR*0.2, -headR*0.25, 0, 0, 0, headR);
+        grad.addColorStop(0,   'rgba(180,255,140,0.55)');
+        grad.addColorStop(0.6, 'rgba(60,200,40,0.15)');
+        grad.addColorStop(1,   'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, headR * 1.18, headR * 0.92, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Nostrils — two tiny dark dots near the snout
+        ctx.shadowBlur  = 0;
+        ctx.fillStyle   = 'rgba(0,30,0,0.85)';
+        ctx.beginPath(); ctx.arc(headR * 0.82,  headR * 0.28, headR * 0.11, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(headR * 0.82, -headR * 0.28, headR * 0.11, 0, Math.PI*2); ctx.fill();
+
+        // Eyes — white sclera
+        const eyeDist = headR * 0.32;
+        const eyeForward = headR * 0.18;
+        ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(eyeForward,  eyeDist, headR * 0.26, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(eyeForward, -eyeDist, headR * 0.26, 0, Math.PI*2); ctx.fill();
+
+        // Eyes — pupils (slightly forward for "looking ahead" feel)
+        ctx.fillStyle = '#111';
+        ctx.beginPath(); ctx.arc(eyeForward + headR*0.08,  eyeDist, headR * 0.15, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(eyeForward + headR*0.08, -eyeDist, headR * 0.15, 0, Math.PI*2); ctx.fill();
+
+        // Eyes — tiny specular dot
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.beginPath(); ctx.arc(eyeForward + headR*0.14,  eyeDist - headR*0.08, headR*0.07, 0, Math.PI*2); ctx.fill();
+        ctx.beginPath(); ctx.arc(eyeForward + headR*0.14, -eyeDist - headR*0.08, headR*0.07, 0, Math.PI*2); ctx.fill();
+
+        // Tongue — flicks in and out
+        const tongueTick = Math.sin(timestamp / 180);
+        if (tongueTick > 0.1) {
+            const tongueLen = headR * (0.5 + tongueTick * 0.4);
+            ctx.strokeStyle = '#ff2255';
+            ctx.lineWidth   = headR * 0.13;
+            ctx.lineCap     = 'round';
+            ctx.shadowBlur  = 6;
+            ctx.shadowColor = '#ff0044';
+            // Main tongue stem
+            ctx.beginPath();
+            ctx.moveTo(headR * 1.1, 0);
+            ctx.lineTo(headR * 1.1 + tongueLen * 0.6, 0);
+            ctx.stroke();
+            // Fork left
+            ctx.beginPath();
+            ctx.moveTo(headR * 1.1 + tongueLen * 0.6, 0);
+            ctx.lineTo(headR * 1.1 + tongueLen, -headR * 0.28);
+            ctx.stroke();
+            // Fork right
+            ctx.beginPath();
+            ctx.moveTo(headR * 1.1 + tongueLen * 0.6, 0);
+            ctx.lineTo(headR * 1.1 + tongueLen,  headR * 0.28);
+            ctx.stroke();
+        }
+
+        ctx.restore();
+    }
+
+    ctx.restore();
+}
+
+// ── UI ─────────────────────────────────────
+function updateUI() {
+    document.getElementById('ui-mode').innerText  = state.mode.toUpperCase();
+    document.getElementById('ui-score').innerText = state.score;
+    const key   = `snake_hs_${state.mode}`;
+    const hs    = parseInt(localStorage.getItem(key) || 0);
+    const newHs = Math.max(hs, state.score);
+    if (state.score > hs) localStorage.setItem(key, state.score);
+    document.getElementById('ui-high').innerText = newHs;
+}
+
+function restart()  { startGame(state.mode); }
+function showMenu() {
+    state.status = 'MENU';
+    clearBonusFruit();
+    document.getElementById('menu-overlay').classList.remove('hidden');
+    document.getElementById('death-overlay').classList.add('hidden');
+}
+
+// ── Keyboard ───────────────────────────────
+window.addEventListener('keydown', e => {
+    const k = {
+        ArrowUp:    {x:0,y:-1}, ArrowDown: {x:0,y:1},
+        ArrowLeft:  {x:-1,y:0}, ArrowRight:{x:1,y:0}
+    };
+    if (k[e.key] && (k[e.key].x !== -snake.dir.x || k[e.key].y !== -snake.dir.y))
+        snake.nextDir = k[e.key];
+});
+
+init();
+</script>
+</body>
+</html>
